@@ -97,6 +97,7 @@ equal_cat,                              // ipr::Equal
 greater_cat,                            // ipr::Greater
 greater_equal_cat,                      // ipr::Greater_equal
 initializer_list_cat,                   // ipr::Initializer_list
+implict_cast_cat,                       // ipr::Implict_cast
 less_cat,                               // ipr::Less
 less_equal_cat,                         // ipr::Less_equal
 literal_cat,                            // ipr::Literal

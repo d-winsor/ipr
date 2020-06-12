@@ -13,7 +13,7 @@
 namespace ipr {
    // Returns true if both operands share the same physical
    // storage.
-   inline bool
+   constexpr bool
    physically_same(const Node& lhs, const Node& rhs)
    {
       return &lhs == &rhs;

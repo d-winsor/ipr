@@ -18,7 +18,7 @@
 namespace ipr {
    namespace impl {
 
-      Token::Token(const ipr::String& s, const Source_location& l,
+      Token::Token(const ipr::String& s, Location l,
                    TokenValue v, TokenCategory c)
             : text{ s }, location{ l }, token_value{ v }, token_category{ c }
       { }
@@ -710,6 +710,7 @@ namespace ipr {
       Enum::Enum(const ipr::Region& r, const ipr::Type& t, Kind k)
             : body(r, t), enum_kind(k)
       {
+         this->constraint = &t;
          body.owned_by = this;
       }
 
@@ -1322,7 +1323,7 @@ namespace ipr {
          return scope;
       }
 
-      const Region::location_span&
+      ipr::Location_span
       Region::span() const {
          return extent;
       }
@@ -1405,7 +1406,6 @@ namespace ipr {
 
          return *item;
       }
-
 
       // -- Language linkage
       const ipr::Linkage&
@@ -1569,12 +1569,12 @@ namespace ipr {
 
       impl::Sizeof*
       expr_factory::make_sizeof(const ipr::Expr& t) {
-         return sizeofs.insert(t, unary_compare());
+         return sizeofs.make(t);
       }
 
       impl::Typeid*
       expr_factory::make_typeid(const ipr::Expr& t) {
-         return xtypeids.insert(t, unary_compare());
+         return xtypeids.make(t);
       }
 
       impl::Unary_minus*
@@ -1717,6 +1717,11 @@ namespace ipr {
          return greater_equals.make(l, r);
       }
 
+      impl::Implict_cast*
+      expr_factory::make_implict_cast(const ipr::Type& t, const ipr::Expr& e) {
+         return implict_casts.make(t, e);
+      }
+
       impl::Less*
       expr_factory::make_less(const ipr::Expr& l, const ipr::Expr& r) {
          return lesses.make(l, r);
@@ -1730,7 +1735,7 @@ namespace ipr {
       impl::Literal*
       expr_factory::make_literal(const ipr::Type& t, const ipr::String& s) {
          using rep = impl::Literal::Rep;
-		 return lits.insert(rep{ t, s }, binary_compare());
+         return lits.make(rep{ t, s });
       }
 
       impl::Literal*
@@ -1907,6 +1912,7 @@ namespace ipr {
               enumtype(get_identifier("enum"), cxx_linkage(), anytype),
               namespacetype(get_identifier("namespace"), cxx_linkage(), anytype),
 
+              errortype(get_identifier("error"), cxx_linkage(), errortype),
               voidtype(get_identifier("void"), cxx_linkage(), anytype),
               booltype(get_identifier("bool"), cxx_linkage(), anytype),
               chartype(get_identifier("char"), cxx_linkage(), anytype),
@@ -1936,6 +1942,7 @@ namespace ipr {
          record_builtin_type(enumtype);
          record_builtin_type(namespacetype);
 
+         record_builtin_type(errortype);
          record_builtin_type(voidtype);
 
          record_builtin_type(booltype);
@@ -1997,6 +2004,8 @@ namespace ipr {
             id->constraint = &get_decltype(*id);
          return *id;
       }
+
+      const ipr::Type& Lexicon::error_type() const { return errortype; }
 
       const ipr::Type& Lexicon::void_type() const {  return voidtype;  }
 

@@ -550,7 +550,13 @@ namespace ipr
          {
             new_style_cast(pp, e, "reinterpret_cast");
          }
-         
+
+         //        implict_cast < type > ( expression )
+         void visit(const Implict_cast& e) override
+         {
+            new_style_cast(pp, e, "implict_cast");
+         }
+
          //        typeid ( expression )
          void visit(const Typeid& e) override
          {
@@ -1429,6 +1435,9 @@ namespace ipr
       { pp << xpr_type_expr(t); }
 
       void visit(const Reference& t) override
+      { pp << xpr_type_expr(t); }
+
+      void visit(const Rvalue_reference& t) override
       { pp << xpr_type_expr(t); }
 
       void visit(const Template& t) override

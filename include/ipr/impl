@@ -157,17 +157,17 @@ namespace ipr {
                                 // -- Token --
       struct Token : ipr::Lexeme, ipr::Token {
          const String& spelling() const final { return text; }
-         const Source_location& locus() const final { return location; }
+         Location loc() const final { return location; }
          const ipr::Lexeme& lexeme() const final { return *this; }
          TokenValue value() const final { return token_value; }
          TokenCategory category() const final { return token_category; }
 
       private:
          const String& text;
-         Source_location location;
+         Location location;
          TokenValue token_value;
          TokenCategory token_category;
-         Token(const String&, const Source_location&, TokenValue, TokenCategory);
+         Token(const String&, Location, TokenValue, TokenCategory);
          friend impl::Lexicon;
       };
 
@@ -185,6 +185,11 @@ namespace ipr {
          void accept(ipr::Visitor& v) const final { v.visit(*this); }
       };
 
+      // Type_qualifier needs to be compatiable with compare()
+      constexpr bool operator<(Type_qualifier a, Type_qualifier b) {
+          return uint8_t(a) < uint8_t(b);
+      }
+
       // In various situations, we need to store nodes in ordered
       // containers.  We could of course use the addresses of Nodes as
       // keys.  However, for simplicity and persistence reasons, we chose
@@ -192,10 +197,11 @@ namespace ipr {
       // identifier at its creation and retain it unchanged till the
       // end of the program.)  An obvious benefit is that ordering comes
       // for free.
-      template<typename T>
+      template<typename T,
+               typename std::enable_if_t<std::is_scalar_v<T>, int> = 0>
       constexpr int compare(T lhs, T rhs)
       {
-         return lhs < rhs ? -1 : (lhs > rhs ? 1 : 0);
+         return lhs < rhs ? -1 : (rhs < lhs ? 1 : 0);
       }
 
       constexpr int compare(const ipr::Node& lhs, const ipr::Node& rhs)
@@ -224,7 +230,7 @@ namespace ipr {
       template<class Interface>
       struct type_from_operand : Interface {
          using typename Interface::Arg_type;
-	 Arg_type rep;
+         Arg_type rep;
 
          explicit type_from_operand(Arg_type a) : rep(a) { }
          const ipr::Type& type() const final
@@ -279,7 +285,6 @@ namespace ipr {
          Arg2_type second() const final { return rep.second; }
       };
 
-
       template<class Interface>
       struct Ternary : Interface {
          using typename Interface::Arg1_type;
@@ -323,7 +328,6 @@ namespace ipr {
          Arg4_type fourth() const final { return rep.fourth; }
       };
 
-      
       // -------------------------
       // -- Classic expressions --
       // -------------------------
@@ -331,11 +335,17 @@ namespace ipr {
       template<class Operation>
       struct Classic : Operation {
          const ipr::Decl* op_impl = { };
+         ipr::Location op_loc;
          using Operation::Operation;
 
          Optional<ipr::Decl> implementation() const final
          {
             return { op_impl };
+         }
+
+         ipr::Location expr_loc() const override
+         {
+            return op_loc;
          }
       };
 
@@ -386,14 +396,88 @@ namespace ipr {
       template<typename T>
       using Unary_expr = Unary<Expr<T>>;
 
-      template<typename T>
-      using Classic_unary_expr = Classic<Unary_expr<T>>;
+      template<class T>
+      struct Unary_expr_recursive_loc : Unary_expr<T> {
+         using Base = Unary_expr<T>;
+         using Base::Base;
+
+         Location_span expr_loc_span() const override
+         {
+            return this->operand().expr_loc_span();
+         }
+      };
+
+      template<class T>
+      using Classic_unary_expr = Classic<Unary_expr_recursive_loc<T>>;
+
+      template<class T>
+      struct Classic_prefix_unary_expr : Classic<Unary_expr<T>> {
+         using Base = impl::Classic<Unary_expr<T>>;
+         using Base::Base;
+
+         Location_span expr_loc_span() const override
+         {
+            return { this->expr_loc(), this->operand().expr_loc_span().end() };
+         }
+      };
+
+      template<class T>
+      struct Classic_postfix_unary_expr : Classic<Unary_expr<T>> {
+         using Base = impl::Classic<Unary_expr<T>>;
+         using Base::Base;
+
+         Location_span expr_loc_span() const override
+         {
+            return { this->operand().expr_loc_span().end(), this->expr_loc() };
+         }
+      };
 
       template<typename T>
       using Binary_expr = Binary<Expr<T>>;
 
-      template<typename T>
-      using Classic_binary_expr = Classic<Binary_expr<T>>;
+      template<class T>
+      struct Binary_expr_recursive_loc : Binary_expr<T> {
+         using Base = Binary_expr<T>;
+         using Base::Base;
+
+         Location_span expr_loc_span() const override {
+             return {this->first().expr_loc_span().begin(), this->second().expr_loc_span().end()};
+         }
+      };
+
+      template<class T>
+      using Classic_binary_expr = Classic<Binary_expr_recursive_loc<T>>;
+
+      template<class T>
+      struct Cast_expr : Conversion_expr<T> {
+         using Base = Conversion_expr<T>;
+         using Base::Base;
+
+         Location_span expr_loc_span() const override { return this->second().expr_loc_span(); }
+      };
+
+      template<class T>
+      struct Conversion_loc_expr : Conversion_expr<T> {
+         using Base = Conversion_expr<T>;
+         using Base::Base;
+         Location_span exprloc;
+
+         Location_span expr_loc_span() const override { return this->exprloc; }
+      };
+
+      template<class T>
+      struct Explict_cast_expr : Conversion_expr<T> {
+         using Base = Conversion_expr<T>;
+         using Base::Base;
+         Location_span typeloc;
+
+         Location_span expr_loc_span() const override
+         {
+            return { this->expr_loc(), this->second().expr_loc_span().end() };
+         }
+
+         Location_span type_loc() const override { return typeloc; }
+      };
 
       // ----------------------------------------------------
       // -- Scopes, sequence of declarations and overloads --
@@ -424,7 +508,7 @@ namespace ipr {
       // operation on a scope, the chain of declaration is
       // organized as a red-back tree where the position is used as key.
       // And alternative is a hash table, when we get there.
-      
+
       using util::rb_tree::link;
       struct scope_datum : link<scope_datum> {
          // The position of this Decl in its scope.  It shall be set
@@ -644,6 +728,18 @@ namespace ipr {
          {
             return (*this)(l.type, r.type);
          }
+
+         int
+         operator()(const ipr::Name& lhs, const ipr::impl::Overload& rhs) const
+         {
+            return compare(lhs, rhs.name);
+         }
+
+         int
+         operator()(const ipr::impl::Overload& lhs, const ipr::Name& rhs) const
+         {
+            return compare(lhs.name, rhs);
+         }
       };
 
       // -----------------------
@@ -716,22 +812,16 @@ namespace ipr {
       // Stmt<S> implements the common operations of statements.
 
       struct Stmt_common {
-         ipr::Unit_location unit_locus;
-         ipr::Source_location src_locus;
+         ipr::Location_span stmtloc;
          ref_sequence<ipr::Annotation> notes;
          ref_sequence<ipr::Attribute> attrs;
       };
 
       template<class S>
       struct Stmt : S, Stmt_common {
-         const ipr::Unit_location& unit_location() const final
+         ipr::Location_span expr_loc_span() const override
          {
-            return unit_locus;
-         }
-
-         const ipr::Source_location& source_location() const final
-         {
-            return src_locus;
+            return stmtloc;
          }
 
          const ipr::Sequence<ipr::Annotation>& annotation() const final
@@ -753,6 +843,7 @@ namespace ipr {
       struct Decl : Stmt<Node<D>> {
          basic_decl_data<D> decl_data;
          ipr::Named_map* pat = { };
+         Location_span nameloc;
          val_sequence<ipr::Substitution> args;
 
          Decl() : decl_data{ nullptr } { }
@@ -770,6 +861,14 @@ namespace ipr {
 
          const ipr::Region& home_region() const override {
             return *util::check(util::check(decl_data.master_data)->home);
+         }
+
+         Location expr_loc() const override {
+            return nameloc.begin();
+         }
+
+         Location_span name_loc() const final {
+            return nameloc;
          }
 
          // Set declaration specifiers for this decl.
@@ -795,6 +894,7 @@ namespace ipr {
          singleton_overload overload;
          ipr::Named_map* pat;
          val_sequence<ipr::Substitution> args;
+         Location_span nameloc;
 
          unique_decl() : spec(ipr::DeclSpecifiers::None),
                          langlinkage{ },
@@ -814,6 +914,10 @@ namespace ipr {
 
          const ipr::Named_map& generating_map() const final
          { return *util::check(pat); }
+
+         Location_span name_loc() const final { 
+             return nameloc;
+         }
       };
 
       struct Parameter : unique_decl<ipr::Parameter> {
@@ -832,7 +936,7 @@ namespace ipr {
          int position() const;
          Optional<ipr::Expr>initializer() const final;
          // FIXME: This should go away.
-         const Parameter_list& membership() const;
+         const ipr::Parameter_list& membership() const;
       };
 
       struct Base_type : unique_decl<ipr::Base_type> {
@@ -976,9 +1080,8 @@ namespace ipr {
       template<class Member,
                class RegionKind = Node<ipr::Region>>
       struct homogeneous_region : RegionKind {
-         using location_span = ipr::Region::Location_span;
          const ipr::Region& parent;
-         location_span extent;
+         Location_span extent;
          const ipr::Expr* owned_by = { };
          homogeneous_scope<Member> scope;
 
@@ -988,7 +1091,7 @@ namespace ipr {
 
          const ipr::Region& enclosing() const { return parent; }
          const ipr::Scope& bindings() const { return scope; }
-         const location_span& span() const { return extent; }
+         Location_span span() const { return extent; }
          const ipr::Expr& owner() const { return *util::check(owned_by); }
 
          homogeneous_region(const ipr::Region& p, const ipr::Type& t)
@@ -1050,9 +1153,9 @@ namespace ipr {
             return this->decl_data.master_data->declset;
          }
 
-         const T& definition() const
+         Optional<T> definition() const
          {
-            return *util::check(this->decl_data.master_data->def);
+            return this->decl_data.master_data->def;
          }
       };
 
@@ -1107,10 +1210,13 @@ namespace ipr {
 
       struct Id_expr : Unary_expr<ipr::Id_expr> {
          const ipr::Decl* decl;
+         Location_span id_loc;
 
          explicit Id_expr(const ipr::Name&);
          const ipr::Type& type() const final;
          const ipr::Decl& resolution() const final;
+         Location expr_loc() const final { return id_loc.begin(); }
+         Location_span expr_loc_span() const final { return id_loc; }
       };
 
       using Not = Classic_unary_expr<ipr::Not>;
@@ -1118,15 +1224,15 @@ namespace ipr {
       using Operator = Unary_expr<ipr::Operator>;
       using Paren_expr = type_from_operand<Classic<Node<ipr::Paren_expr>>>;
       
-      using Pre_decrement = Classic_unary_expr<ipr::Pre_decrement>;
-      using Pre_increment = Classic_unary_expr<ipr::Pre_increment>;
-      using Post_decrement = Classic_unary_expr<ipr::Post_decrement>;
-      using Post_increment = Classic_unary_expr<ipr::Post_increment>;
-      using Throw = Classic_unary_expr<ipr::Throw>;
+      using Pre_decrement = Classic_prefix_unary_expr<ipr::Pre_decrement>;
+      using Pre_increment = Classic_prefix_unary_expr<ipr::Pre_increment>;
+      using Post_decrement = Classic_postfix_unary_expr<ipr::Post_decrement>;
+      using Post_increment = Classic_postfix_unary_expr<ipr::Post_increment>;
+      using Throw = Classic_postfix_unary_expr<ipr::Throw>;
       using Type_id = type_from_operand<Node<ipr::Type_id>>;
 
-      using Unary_minus = Classic_unary_expr<ipr::Unary_minus>;
-      using Unary_plus = Classic_unary_expr<ipr::Unary_plus>;
+      using Unary_minus = Classic_prefix_unary_expr<ipr::Unary_minus>;
+      using Unary_plus = Classic_prefix_unary_expr<ipr::Unary_plus>;
       using Expansion = Classic_unary_expr<ipr::Expansion>;
 
       using And = Classic_binary_expr<ipr::And>;
@@ -1142,21 +1248,30 @@ namespace ipr {
       using Bitxor = Classic_binary_expr<ipr::Bitxor>;
       using Bitxor_assign = Classic_binary_expr<ipr::Bitxor_assign>;
       using Call = Classic_binary_expr<ipr::Call>;
-      using Cast = Conversion_expr<ipr::Cast>;
+      using Cast = Explict_cast_expr<ipr::Cast>;
       using Comma = Classic_binary_expr<ipr::Comma>;
-      using Const_cast = Conversion_expr<ipr::Const_cast>;
+      using Const_cast = Explict_cast_expr<ipr::Const_cast>;
       using Datum = Conversion_expr<ipr::Datum>;
       using Div = Classic_binary_expr<ipr::Div>;
       using Div_assign = Classic_binary_expr<ipr::Div_assign>;
       using Dot = Classic_binary_expr<ipr::Dot>;
       using Dot_star = Classic_binary_expr<ipr::Dot_star>;
-      using Dynamic_cast = Conversion_expr<ipr::Dynamic_cast>;
+      using Dynamic_cast = Explict_cast_expr<ipr::Dynamic_cast>;
       using Equal = Classic_binary_expr<ipr::Equal>;
       using Greater = Classic_binary_expr<ipr::Greater>;
       using Greater_equal = Classic_binary_expr<ipr::Greater_equal>;
+      using Implict_cast = Cast_expr<ipr::Implict_cast>;
       using Less = Classic_binary_expr<ipr::Less>;
       using Less_equal = Classic_binary_expr<ipr::Less_equal>;
-      using Literal = Conversion_expr<ipr::Literal>;
+      struct Literal : Conversion_expr<ipr::Literal> {
+         using Base = impl::Conversion_expr<ipr::Literal>;
+         using Base::Base;
+
+         Location_span lit_loc;
+         Location expr_loc() const final { return lit_loc.begin(); }
+         Location_span expr_loc_span() const final { return lit_loc; }
+      };
+
       using Lshift = Classic_binary_expr<ipr::Lshift>;
       using Lshift_assign = Classic_binary_expr<ipr::Lshift_assign>;
 
@@ -1186,11 +1301,11 @@ namespace ipr {
       using Or = Classic_binary_expr<ipr::Or>;
       using Plus = Classic_binary_expr<ipr::Plus>;
       using Plus_assign = Classic_binary_expr<ipr::Plus_assign>;
-      using Reinterpret_cast = Conversion_expr<ipr::Reinterpret_cast>;
+      using Reinterpret_cast = Explict_cast_expr<ipr::Reinterpret_cast>;
       using Rshift = Classic_binary_expr<ipr::Rshift>;
       using Rshift_assign = Classic_binary_expr<ipr::Rshift_assign>;
       using Scope_ref = Binary_expr<ipr::Scope_ref>;
-      using Static_cast = Conversion_expr<ipr::Static_cast>;
+      using Static_cast = Explict_cast_expr<ipr::Static_cast>;
       using Template_id = Binary_expr<ipr::Template_id>;
 
       using Conditional = Ternary<Classic<Expr<ipr::Conditional>>>;
@@ -1210,6 +1325,7 @@ namespace ipr {
          // Returns an IPR node for unified string literals.
          const ipr::String& get_string(const char*);
          const ipr::String& get_string(const std::string&);
+         const ipr::String& get_string(const char*, int);
 
          // Returns an IPR node a language linkage.
          const ipr::Linkage& get_linkage(const char*);
@@ -1288,6 +1404,7 @@ namespace ipr {
          Equal* make_equal(const ipr::Expr&, const ipr::Expr&);
          Greater* make_greater(const ipr::Expr&, const ipr::Expr&);
          Greater_equal* make_greater_equal(const ipr::Expr&, const ipr::Expr&);
+         Implict_cast* make_implict_cast(const ipr::Type&, const ipr::Expr&);
          Less* make_less(const ipr::Expr&, const ipr::Expr&);
          Less_equal* make_less_equal(const ipr::Expr&, const ipr::Expr&);
          Lshift* make_lshift(const ipr::Expr&, const ipr::Expr&);
@@ -1322,6 +1439,11 @@ namespace ipr {
 
          Mapping* make_mapping(const ipr::Region&, const ipr::Type&, int = 0);
 
+         //const ipr::Identifier* query_identifier(const char*, int) const;
+         //const ipr::Operator* query_operator(const char*, int) const;
+         //const ipr::Scope_ref* query_scoped_ref(const Name&, const Name&) const;
+         //const ipr::String* query_string(const char*, int) const;
+
       private:
          util::string::arena string_pool;
          util::rb_tree::container<impl::String> strings;
@@ -1333,14 +1455,11 @@ namespace ipr {
          util::rb_tree::container<impl::Ctor_name> ctors;
          util::rb_tree::container<impl::Dtor_name> dtors;
          util::rb_tree::container<impl::Identifier> ids;
-         util::rb_tree::container<impl::Literal> lits;
          util::rb_tree::container<impl::Operator> ops;
          util::rb_tree::container<impl::Rname> rnames;
          util::rb_tree::container<impl::Scope_ref> scope_refs;
-         util::rb_tree::container<Template_id> template_ids;
+         util::rb_tree::container<impl::Template_id> template_ids;
          util::rb_tree::container<impl::Type_id> type_ids;
-         util::rb_tree::container<impl::Sizeof> sizeofs;
-         util::rb_tree::container<impl::Typeid> xtypeids;
 
          stable_farm<impl::Phantom> phantoms;
          
@@ -1350,19 +1469,22 @@ namespace ipr {
          stable_farm<impl::Complement> complements;
          stable_farm<impl::Delete> deletes;
          stable_farm<impl::Deref> derefs;
+         stable_farm<impl::Expansion> expansions;
          stable_farm<impl::Expr_list> xlists;
          stable_farm<impl::Id_expr> id_exprs;
          stable_farm<impl::Initializer_list> init_lists;
+         stable_farm<impl::Literal> lits;
          stable_farm<impl::Not> nots;
          stable_farm<impl::Pre_increment> pre_increments;
          stable_farm<impl::Pre_decrement> pre_decrements;
          stable_farm<impl::Post_increment> post_increments;
          stable_farm<impl::Post_decrement> post_decrements;
          stable_farm<impl::Paren_expr> parens;
+         stable_farm<impl::Sizeof> sizeofs;
          stable_farm<impl::Throw> throws;
+         stable_farm<impl::Typeid> typeids;
          stable_farm<impl::Unary_minus> unary_minuses;
          stable_farm<impl::Unary_plus> unary_pluses;
-         stable_farm<impl::Expansion> expansions;
 
          stable_farm<impl::And> ands;
          stable_farm<impl::Array_ref> array_refs;
@@ -1388,6 +1510,7 @@ namespace ipr {
          stable_farm<impl::Equal> equals;
          stable_farm<impl::Greater> greaters;
          stable_farm<impl::Greater_equal> greater_equals;
+         stable_farm<impl::Implict_cast> implict_casts;
          stable_farm<impl::Less> lesses;
          stable_farm<impl::Less_equal> less_equals;
          stable_farm<impl::Lshift> lshifts;
@@ -1407,12 +1530,11 @@ namespace ipr {
          stable_farm<impl::Rshift> rshifts;
          stable_farm<impl::Rshift_assign> rshift_assigns;
          stable_farm<impl::Static_cast> scasts;
+         stable_farm<impl::Typeid> xtypeids;
          
          stable_farm<impl::New> news;
          stable_farm<impl::Conditional> conds;
          stable_farm<impl::Mapping> mappings;
-
-         const ipr::String& get_string(const char*, int);
       };
 
       
@@ -1421,6 +1543,7 @@ namespace ipr {
          impl::Mapping* init;
          const ipr::Region* lexreg;
          impl::Expr_list args;
+         ref_sequence<ipr::Decl> lexdecls;
 
          Named_map();
 
@@ -1450,6 +1573,8 @@ namespace ipr {
             // The actual representation for the declaration points back
             // to the master declaration bookkeeping store.
             decl_rep<Interface>* master = decls.make(data);
+            // Populate the back pointer before adding to the overload-set.
+            data->decl = master->decl_data.decl;
             // Inform the overload-set that we have a new master declaration.
             ovl->push_back(data);
 
@@ -1477,7 +1602,7 @@ namespace ipr {
       struct traits<ipr::Alias> {
          using rep = impl::Alias; 
       };
-      
+
       struct Var : impl::Decl<ipr::Var> {
          const ipr::Expr* init;
          const ipr::Region* lexreg;
@@ -1539,6 +1664,7 @@ namespace ipr {
          const ipr::Type* init;
          const ipr::Udt* member_of;
          const ipr::Region* lexreg;
+         ref_sequence<ipr::Decl> lexdecls;
 
          Typedecl();
 
@@ -1569,7 +1695,6 @@ namespace ipr {
       struct traits<ipr::Fundecl> {
          using rep = impl::Fundecl;
       };
-
       
       // A heterogeneous scope is a sequence of declarations of
       // almost of kinds.  The omitted kinds being parameters,
@@ -1617,21 +1742,20 @@ namespace ipr {
       // contains heterogeneous scope (as defined above).
 
       struct Region : impl::Node<ipr::Region> {
-         using location_span = ipr::Region::Location_span;
          const ipr::Region* parent;
-         location_span extent;
+         ipr::Location_span extent;
          const ipr::Expr* owned_by;
          impl::Scope scope;
 
          const ipr::Region& enclosing() const;
          const ipr::Scope& bindings() const;
-         const location_span& span() const;
+         ipr::Location_span span() const;
          const ipr::Expr& owner() const;
 
          impl::Region* make_subregion();
 
          // Convenient functions, forwarding to those of SCOPE.
-         impl::Alias* declare_alias(const ipr::Name& n, const ipr::Type& t)
+         impl::Alias* declare_alias(const ipr::Name& n, const ipr::Type_id& t)
          {
             return scope.make_alias(n, t);
          }
@@ -1719,7 +1843,7 @@ namespace ipr {
             field->member_of = this;
             return field;
          }
-         
+
          impl::Var*
          declare_var(const ipr::Name& n, const ipr::Type& t)
          {
@@ -1777,12 +1901,11 @@ namespace ipr {
 
       struct Class : impl::Udt<ipr::Class> {
          homogeneous_region<ipr::Base_type> base_subobjects;
-         
+
          Class(const ipr::Region&, const ipr::Type&);
 
          const ipr::Sequence<ipr::Base_type>& bases() const final;
          impl::Base_type* declare_base(const ipr::Type&);
-
       };
 
       struct Auto : impl::Type<ipr::Auto> {
@@ -2043,6 +2166,7 @@ namespace ipr {
          const ipr::Literal& get_literal(const ipr::Type&, const std::string&);
          const ipr::Literal& get_literal(const ipr::Type&, const ipr::String&);
          
+         const ipr::Type& error_type() const final;
          const ipr::Type& void_type() const final;
          const ipr::Type& bool_type() const final;
 
@@ -2125,8 +2249,7 @@ namespace ipr {
          int make_fileindex(const ipr::String&);
          const ipr::String& to_filename(int) const;
 
-         const impl::Token* make_token(const ipr::String&,
-                                       const Source_location&,
+         const impl::Token* make_token(const ipr::String&, Location,
                                        TokenValue, TokenCategory);
 
          const ipr::Auto& get_auto();
@@ -2148,6 +2271,7 @@ namespace ipr {
          const impl::Builtin<ipr::As_type> uniontype;
          const impl::Builtin<ipr::As_type> enumtype;
          const impl::Builtin<ipr::As_type> namespacetype;
+         const impl::Builtin<ipr::As_type> errortype;
          const impl::Builtin<ipr::As_type> voidtype;
          const impl::Builtin<ipr::As_type> booltype;
          const impl::Builtin<ipr::As_type> chartype;

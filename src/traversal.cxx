@@ -632,6 +632,12 @@ ipr::Visitor::visit(const Reinterpret_cast& e)
 }
 
 void
+ipr::Visitor::visit(const Implict_cast& e)
+{
+   visit(as<Classic>(e));
+}
+
+void
 ipr::Visitor::visit(const Lshift& e)
 {
    visit(as<Classic>(e));

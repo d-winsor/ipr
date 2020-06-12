@@ -1,0 +1,38 @@
+// -*- C++ -*-
+//
+// This file is part of The Pivot framework.
+// Written by Gabriel Dos Reis.
+// See LICENSE for copyright and license notices.
+//
+#pragma once
+
+#include <ipr\interface>
+
+namespace ipr
+{
+
+struct Evaluated_location {
+    uint32_t begin_line;
+    uint32_t begin_column;
+};
+
+struct Evaluated_location_span
+{
+    uint32_t begin_line;
+    uint32_t begin_column;
+    uint32_t end_line;
+    uint32_t end_column;
+};
+
+struct Source_manager
+{
+    virtual uint32_t get_line_number(Location location) const = 0;
+    virtual uint32_t get_column_number(Location location) const = 0;
+
+    virtual Evaluated_location evaluate_location(Location location) const = 0;
+    virtual Evaluated_location_span evaluate_range(Location_span location) const = 0;
+
+    virtual std::string get_line_contents(Location location) const = 0;
+};
+
+}

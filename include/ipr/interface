@@ -169,6 +169,7 @@ namespace ipr {
    struct Greater;               // greater comparison             a > b
    struct Greater_equal;         // greater-or-equal comparison    a >= b
    struct Initializer_list;      // brace-enclosed expression list { a, b }
+   struct Implict_cast;          // implict-cast              double -> int
    struct Less;                  // less comparison                a < b
    struct Less_equal;            // less-equal comparison          a <= b
    struct Literal;               // literal expressions            3.14
@@ -284,24 +285,51 @@ namespace ipr {
    // unit-names to IDs (integers).  That mapping is managed by the Unit
    // instance.
 
-   enum class Line_number : uint32_t { };
-   enum class Column_number : uint32_t { };
+   // Locations in the IPR are stored and consume by value so it must remain small.
+   enum class Encoded_location : uint32_t { Invalid = 0 }; 
 
-   struct Basic_location {
-      Line_number line = { };
-      Column_number column = { };
+   // A Location represents an encoded physical location in a file.
+   struct Location {
+      constexpr Location() = default;
+      constexpr Location(const Location&) = default;
+      constexpr Location(Location&&) = default;
+      constexpr Location& operator=(const Location&) = default;
+      constexpr Location(Encoded_location raw_encoding) : encoded(raw_encoding) {}
+
+      constexpr bool is_valid() const {
+          return encoded != Encoded_location::Invalid;
+      }
+      constexpr Encoded_location raw_encoding() const { return encoded; }
+
+   private:
+      Encoded_location encoded{Encoded_location::Invalid};
    };
 
-   enum class File_index : uint32_t { };
+   // A Location_span should be expressable by any two arbitary Location However
+   // it is implementation defined how to evaulate the actual range that represents.
+   // For example the the encoded end location could be the start of the last token in
+   // the range, the last byte of the range or a situational combination of both.
+   struct Location_span
+   {
+      constexpr Location_span() = default;
+      constexpr Location_span(const Location_span&) = default;
+      constexpr Location_span(Location_span&&) = default;
+      constexpr Location_span& operator=(const Location_span&) = default;
+      constexpr Location_span(Location encoded_begin, Location encoded_end)
+         : encoded_begin(encoded_begin), encoded_end(encoded_end)
+      {
+      }
 
-   struct Source_location : Basic_location {
-      File_index file = { };    // ID of the file
-   };
+      constexpr bool is_valid() const {
+         return encoded_begin.is_valid() && encoded_end.is_valid();
+      }
 
-   enum class Unit_index : uint32_t { };
-   
-   struct Unit_location : Basic_location {
-      Unit_index unit = { };    // ID of the unit
+      constexpr Location begin() const { return encoded_begin; }
+      constexpr Location end() const { return encoded_end; }
+
+   private:
+      Location encoded_begin{Encoded_location::Invalid};
+      Location encoded_end{Encoded_location::Invalid};
    };
 
    // -- General structural utility types.
@@ -525,7 +553,7 @@ namespace ipr {
 
    struct Lexeme {
       virtual const String& spelling() const = 0;
-      virtual const Source_location& locus() const = 0;
+      virtual Location loc() const = 0;
    };
 
    struct Token {
@@ -651,8 +679,7 @@ namespace ipr {
    // The sequence of declarations appearing in a Region makes up the
    // Scope of that region.
    struct Region : Category<region_cat, Node> {
-      using Location_span = std::pair<Unit_location, Unit_location>;
-      virtual const Location_span& span() const = 0;
+      virtual Location_span span() const = 0;
       virtual const Region& enclosing() const = 0;
       virtual const Scope& bindings() const = 0;
       virtual const Expr& owner() const = 0;
@@ -665,6 +692,12 @@ namespace ipr {
    // (object, function).  Every expression has a type.
    struct Expr : Node {
       virtual const Type& type() const = 0;
+
+      // The preferred location for diagnostics.
+      virtual Location expr_loc() const { return {}; }
+
+      // The start and end of an expr.
+      virtual Location_span expr_loc_span() const { return {}; }
 
    protected:
       Expr(Category_code c) : Node(c)
@@ -1280,6 +1313,14 @@ namespace ipr {
       const Expr& expr() const { return this->second(); }
    };
 
+                                   // -- Explict_cast_expr<> --
+   // This classes factorizes the commonalities of cast-expressions that
+   // have explict user casts
+   template<Category_code Cat>
+   struct Explict_cast_expr :Cast_expr<Cat> {
+      virtual Location_span type_loc() const = 0;
+   };
+
                                 // -- Plus --
    // Addition-expression -- "a + b"
    struct Plus : Binary<Category<plus_cat, Classic>> { };
@@ -1337,7 +1378,7 @@ namespace ipr {
                                 //  -- Cast --
    // An expression of the form "(type) expr", representing the
    // old-style/C-style cast.
-   struct Cast : Cast_expr<cast_cat> { };
+   struct Cast : Explict_cast_expr<cast_cat> { };
 
                                 // -- Call --
    // A function call with an argument list.  Notice that in the abstract
@@ -1355,7 +1396,7 @@ namespace ipr {
 
                                 // -- Const_cast --
    // const_cast-expression -- "const_cast<type>(expr)".
-   struct Const_cast : Cast_expr<const_cast_cat> { };
+   struct Const_cast : Explict_cast_expr<const_cast_cat> { };
 
                                 // -- Datum --
    // An expression of the form "T(e1, e2, .. en)" where "T"
@@ -1389,7 +1430,7 @@ namespace ipr {
 
                                 // -- Dynamic_cast --
    // An expression of the from "dynamic_cast<type>(expr)".
-   struct Dynamic_cast : Cast_expr<dynamic_cast_cat> { };
+   struct Dynamic_cast : Explict_cast_expr<dynamic_cast_cat> { };
 
                                 // -- Equal --
    // Equality-comparison-expression -- "a == b"
@@ -1402,6 +1443,10 @@ namespace ipr {
                                 // -- Greater_equal --
    // greater-or-equal-comparison-expression -- "a >= b"
    struct Greater_equal : Binary<Category<greater_equal_cat, Classic>> { };
+
+                                // -- Implict_cast --
+   // An implict type conversion -- double -> int
+   struct Implict_cast : Cast_expr<implict_cast_cat> { };
 
                                 // -- Less --
    // less-comparison-expression -- "a < b"
@@ -1479,7 +1524,7 @@ namespace ipr {
 
                                 // -- Reinterpret_cast --
    // An expression of the form "reinterpret_cast<type>(expr)"
-   struct Reinterpret_cast : Cast_expr<reinterpret_cast_cat> { };
+   struct Reinterpret_cast : Explict_cast_expr<reinterpret_cast_cat> { };
 
                                 // -- Lshift --
    // left-shift-expression -- "a << b"
@@ -1499,7 +1544,7 @@ namespace ipr {
 
                                 // -- Static_cast --
    // An expression of the form "static_cast<type>(expr)".
-   struct Static_cast : Cast_expr<static_cast_cat> { };
+   struct Static_cast : Explict_cast_expr<static_cast_cat> { };
 
                                 // -- New --
    // This node represents a new-expression:
@@ -1574,9 +1619,6 @@ namespace ipr {
    // class hierarchy and unnecessary complexities.  Therefore, we're back to
    // the view that a statement is an expression, with some simplifications.
    struct Stmt : Expr {
-      // The location of this statement in its unit.
-      virtual const Unit_location& unit_location() const = 0;
-      virtual const Source_location& source_location() const = 0;
       virtual const Sequence<Annotation>& annotation() const = 0;
       virtual const Sequence<Attribute>& attributes() const = 0;
 
@@ -1845,6 +1887,8 @@ namespace ipr {
 
       virtual const Sequence<Decl>& decl_set() const = 0;
 
+      virtual Location_span name_loc() const = 0;
+
    protected:
       Decl(Category_code c) : Stmt(c)
       { }
@@ -1866,7 +1910,7 @@ namespace ipr {
       const Parameter_list& params() const { return mapping().params(); }
       const Expr& result() const { return mapping().result(); }
 
-      virtual const Named_map& definition() const = 0;
+      virtual Optional<Named_map> definition() const = 0;
    };
 
                                 // -- Enumerator --
@@ -1905,7 +1949,7 @@ namespace ipr {
       // A base-object is, by definition, unnamed.  However, it
       // is convenient to refer to it by the name of the corresponding
       // type -- in C++ tradition.
-      const Name& name() const { return type().name(); }
+      const Name& name() const override { return type().name(); }
    };
 
                                 // -- Parameter --
@@ -1927,7 +1971,7 @@ namespace ipr {
       const Parameter_list& parameters() const
       { return mapping().params(); }
 
-      virtual const Fundecl& definition() const = 0;
+      virtual Optional<Fundecl> definition() const = 0;
    };
 
                                 // -- Var --
@@ -1952,7 +1996,7 @@ namespace ipr {
                                 // -- Typedecl --
    struct Typedecl : Category<typedecl_cat, Decl> {
       virtual const Udt& membership() const = 0;
-      virtual const Typedecl& definition() const = 0;
+      virtual Optional<Typedecl> definition() const = 0;
    };
 
                                 // -- Translation_unit --
@@ -1984,6 +2028,7 @@ namespace ipr {
 
                                 // -- Lexicon --
    struct Lexicon {
+      virtual const Type& error_type() const = 0;
       virtual const Type& void_type() const = 0;
       virtual const Type& bool_type() const = 0;
       virtual const Type& char_type() const = 0;
@@ -2113,7 +2158,8 @@ namespace ipr {
       virtual void visit(const Dynamic_cast&); 
       virtual void visit(const Equal&); 
       virtual void visit(const Greater&); 
-      virtual void visit(const Greater_equal&); 
+      virtual void visit(const Greater_equal&);
+      virtual void visit(const Implict_cast&);  
       virtual void visit(const Less&); 
       virtual void visit(const Less_equal&); 
       virtual void visit(const Literal&);
