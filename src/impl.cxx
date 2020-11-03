@@ -73,6 +73,7 @@ namespace ipr {
 
       int
       decl_sequence::size() const {
+         int x;
          return decls.size();
       }
 
